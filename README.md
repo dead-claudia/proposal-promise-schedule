@@ -223,13 +223,14 @@ completeProgressBar()
 
 Here's a possible polyfill of what I'm proposing. Only a very rudimentary attempt is made to ensure performance, and the spec text would roughly equate to this.
 
-> As you can see, this is very non-trivial and somewhat involved, despite the relative simplicity of the API. I would not expect most people that aren't at least passingly familiar with computer science to be able to come up with this very quickly.
+> As you can see, this is very non-trivial and somewhat involved, despite the relative simplicity of the API - it's a whole 77 lines of code excluding whitespace, and that's without any sort of defensive coding at all that's more typical of polyfills. I would not expect most people that aren't at least passingly familiar with computer science to be able to come up with this very quickly.
 >
-> If you want a more optimized polyfill suitable to try out in production, take a look at `polyfill.js` here in the project root. Of course, it's a bit more involved, but 1. performance is neither simple nor easy and 2. it's also geared towards informing engine implementation.
+> If you want a more optimized polyfill suitable to try out in more real world-y situations, take a look at `polyfill.js` here in the project root. Of course, it's a bit more involved, but 1. performance is neither simple nor easy and 2. it's also geared towards informing engine implementation.
 
 ```js
 if (!Promise.scheduleAndRun) {
     Promise.scheduleAndRun = (initialize, opts) => {
+        "use strict"
         const maxConcurrencyOpt = opts != null ? opts.maxConcurrency : null
         const maxConcurrency = maxConcurrencyOpt != null
             ? Math.floor(maxConcurrencyOpt)
