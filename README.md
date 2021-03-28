@@ -121,7 +121,7 @@ There's several major problems with this:
 
 And yes, I've used all 4 idioms in the wild numerous times, especially at work, and I've even written out a function for that idiom 4 multiple times already. And every single time it's made the whole thing mildly intricate to write. Also, consider that:
 
-- [Bluebird's `Promise.map` has had a `concurrency` option](http://bluebirdjs.com/docs/api/promise.map.html) since [2.0](http://bluebirdjs.com/docs/changelog.html#what), [released in June 2014](https://www.npmjs.com/package/bluebird/v/2.0.2)
+- [Bluebird's `Promise.map` has had a `concurrency` option](http://bluebirdjs.com/docs/api/promise.map.html) since [2.0](http://bluebirdjs.com/docs/changelog.html#what), [released in June 2014](https://www.npmjs.com/package/bluebird/v/2.0.2).
 - [Async's had `eachLimit` (formerly `forEachLimit`) since 0.1.10](https://github.com/caolan/async/commit/90c80a15f3f49bfa75880a6c724d4aceccb9ea4a), [released in October 2011](https://www.npmjs.com/package/async/v/0.1.13).
 - [When's had `when/guard` for concurrency control since 2.1.0](https://github.com/cujojs/when/blob/master/CHANGES.md#210), [released in May 2013](https://www.npmjs.com/package/when/v/2.1.0).
 - [`d3-queue`'s had a concurrency option since the initial commit in January 2012.](https://github.com/d3/d3-queue/tree/581e4941c5437d31db92066f4bd3684c0b468a28)
