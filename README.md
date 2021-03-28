@@ -1,7 +1,8 @@
-# A proposal to add promise task scheduling
+# Composable promise task scheduling
 
 - [Problem](#problem)
 - [Solution](#solution)
+- [Proposed polyfill](#proposed-polyfill)
 - [Proposed polyfill](#proposed-polyfill)
 
 ## Problem
@@ -118,7 +119,12 @@ There's several major problems with this:
 6. Do you need to limit concurrency to ensure throughput or limit memory usage? You're forced to either do the longest form or manually iterate the collection with occasional `await readyForNextValue()` calls in the loop, as `Promise.all` doesn't offer anything to let you manage concurrency.
 7. What if you try to schedule a task after it resolves? Fun fact: I've been bit by that specific scenario, and had to introduce a locking mechanism for it. But I don't expect people to realize this and account for it until things go wrong and either they receive a bug report or notice a strange pattern in their logs (assuming they even have error reporting set up).
 
-And yes, I've used all 4 idioms in the wild numerous times, especially at work. And every single time it's made the whole thing mildly intricate to write. Also, consider that [Bluebird's `Promise.map` has had a `concurrency` option since before ES6](http://bluebirdjs.com/docs/api/promise.map.html). (I *believe* it may even have been proposed previously, though I'm not 100% sure where.)
+And yes, I've used all 4 idioms in the wild numerous times, especially at work, and I've even written out a function for that idiom 4 multiple times already. And every single time it's made the whole thing mildly intricate to write. Also, consider that:
+
+- [Bluebird's `Promise.map` has had a `concurrency` option](http://bluebirdjs.com/docs/api/promise.map.html) since [2.0](http://bluebirdjs.com/docs/changelog.html#what), [released in June 2014](https://www.npmjs.com/package/bluebird/v/2.0.2)
+- [Async's had `eachLimit` (formerly `forEachLimit`) since 0.1.10](https://github.com/caolan/async/commit/90c80a15f3f49bfa75880a6c724d4aceccb9ea4a), [released in October 2011](https://www.npmjs.com/package/async/v/0.1.13).
+- [When's had `when/guard` for concurrency control since 2.1.0](https://github.com/cujojs/when/blob/master/CHANGES.md#210), [released in May 2013](https://www.npmjs.com/package/when/v/2.1.0).
+- [`d3-queue`'s had a concurrency option since the initial commit in January 2012.](https://github.com/d3/d3-queue/tree/581e4941c5437d31db92066f4bd3684c0b468a28)
 
 ## Solution
 
@@ -305,3 +311,14 @@ if (!Promise.scheduleAndRun) {
     }
 }
 ```
+
+## Follow-on: Task options
+
+This would be useful for coordinating tasks, and would mean people wouldn't have to roll their own task queues just to run stuff. There's two options I can think of right off:
+
+- Priority - this would mean a binary heap would have to be used rather than a simple array for proper efficiency.
+- Weight (as in counting more than once towards concurrency) - the initializer would also necessarily have to have this option
+
+This follow-on is *not* included in the polyfills, as at least with priority it's once again not the easiest to add.
+
+There's not a lot of library precedent for this outside like heavy message brokers and such, but I did find one that's getting a decent number (just under 86k as of 2021 March 28) of weekly downloads: [`vow-queue`](https://www.npmjs.com/package/vow-queue). And [that's had those options since its initial commit, too](https://github.com/dfilatov/vow-queue/blob/be19316c3fe238b10a79e26421f6d8149c7af452/lib/queue.js).
