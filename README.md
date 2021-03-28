@@ -3,7 +3,7 @@
 - [Problem](#problem)
 - [Solution](#solution)
 - [Proposed polyfill](#proposed-polyfill)
-- [Proposed polyfill](#proposed-polyfill)
+- [Follow-on: Task options](#follow-on-task-options)
 
 ## Problem
 
