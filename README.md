@@ -296,7 +296,7 @@ if (!Promise.scheduleAndRun) {
             }
 
             handleResult("initial",
-                new Promise(resolve => {
+                new Promise(resolve => resolve(initialize(task => {
                     if (active === 0) return false
                     if (active < maxConcurrency) {
                         active++
@@ -306,7 +306,7 @@ if (!Promise.scheduleAndRun) {
                         queue.push(task)
                         return false
                     }
-                })
+                })))
             )
         })
     }
