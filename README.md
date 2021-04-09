@@ -126,6 +126,151 @@ And yes, I've used all 4 idioms in the wild numerous times, especially at work, 
 - [When's had `when/guard` for concurrency control since 2.1.0](https://github.com/cujojs/when/blob/master/CHANGES.md#210), [released in May 2013](https://www.npmjs.com/package/when/v/2.1.0).
 - [`d3-queue`'s had a concurrency option since the initial commit in January 2012.](https://github.com/d3/d3-queue/tree/581e4941c5437d31db92066f4bd3684c0b468a28)
 
+<details>
+<summary>Case study: combining data from multiple sources in parallel while avoiding resource leaks on error</summary>
+
+Consider this code, taken from [here](https://github.com/awslabs/aws-api-gateway-developer-portal/blob/18e152bdbb398358b15e0b713862fb6d9a3cba95/lambdas/catalog-updater/index.js#L189-L267). The ultimate goal of it is to read both the usage plans and Swagger files concurrently, but still coordinate the catalog builder construction correctly. Oh, and if any errors occur within tasks, we should abort the Swagger file iteration so we aren't still trying to build. This does *not* require limiting concurrency, however.
+
+```js
+const handler = (event) => new Promise((resolve, reject) => {
+  console.log(`event: ${inspect(event)}`)
+
+  let s3Request
+  let builder = []
+  let open = 1
+
+  function abort (err) {
+    if (open === 0) return
+    open = 0
+    if (s3Request != null) {
+      s3Request.abort()
+      s3Request = null
+    }
+    return reject(err)
+  }
+
+  function complete () {
+    if (open === 0) return
+    open--
+    if (open === 0) {
+      console.log(`catalog: ${inspect(builder.catalog)}`)
+
+      const params = {
+        Bucket: process.env.BucketName,
+        Key: 'catalog.json',
+        Body: JSON.stringify(builder.catalog),
+        ContentType: 'application/json'
+      }
+
+      resolve(exports.s3.upload(params).promise())
+    }
+  }
+
+  const usagePlansPromise = getAllUsagePlans(exports.apiGateway)
+  usagePlansPromise.catch(abort)
+  exports.s3.getObject({ Bucket: process.env.BucketName, Key: 'sdkGeneration.json' }).promise()
+    .then(response => {
+      const sdkGeneration = JSON.parse(response.Body.toString())
+      console.log(`sdkGeneration: ${inspect(sdkGeneration)}`)
+      usagePlansPromise.then(usagePlans => {
+        const swaggers = builder
+        console.log(`usagePlans: ${inspect(usagePlans)}`)
+        builder = new CatalogBuilder(usagePlans, sdkGeneration)
+        for (const s of swaggers) builder.addToCatalog(s)
+        complete()
+      })
+    }, abort)
+
+  function consumeNext (listObjectsResult) {
+    if (listObjectsResult.IsTruncated) loop(listObjectsResult.NextContinuationToken)
+    for (const file of listObjectsResult.Contents) {
+      if (exports.swaggerFileFilter(file)) {
+        open++
+        getSwaggerFile(file).then(s => {
+          complete()
+          if (Array.isArray(builder)) {
+            builder.push(s)
+          } else {
+            builder.addToCatalog(s)
+          }
+        }, abort)
+      }
+    }
+    complete()
+  }
+
+  function loop (token) {
+    open++
+    s3Request = exports.s3.listObjectsV2(
+      token != null
+        ? { Bucket: process.env.BucketName, Prefix: 'catalog/', ContinuationToken: token }
+        : { Bucket: process.env.BucketName, Prefix: 'catalog/' }
+    )
+    s3Request.promise().then(consumeNext, abort)
+  }
+
+  loop()
+})
+```
+
+This runs very hard into the open counter idiom I noted initially. It's also borderline spaghetti.
+
+The following code uses the proposed `Promise.scheduleAndRun`, and is considerably simpler and easier to understand - in fact, it takes only 60% of the code while still remaining much clearer on what's going on. And yes, it fulfills all the above constraints on operation ordering, too.
+
+```js
+const handler = async (event) => {
+  console.log(`event: ${inspect(event)}`)
+
+  let s3Request
+
+  await Promise.scheduleAndRun(async schedule => {
+    const builderPromise = schedule(async () => {
+      const usagePlansPromise = getAllUsagePlans(exports.apiGateway)
+      const response = await exports.s3.getObject({ Bucket: process.env.BucketName, Key: 'sdkGeneration.json' }).promise()
+      const sdkGeneration = JSON.parse(response.Body.toString())
+      console.log(`sdkGeneration: ${inspect(sdkGeneration)}`)
+      const usagePlans = await usagePlansPromise
+      console.log(`usagePlans: ${inspect(usagePlans)}`)
+      return new CatalogBuilder(usagePlans, sdkGeneration)
+    })
+
+    let token
+    do {
+      s3Request = exports.s3.listObjectsV2(
+        token != null
+          ? { Bucket: process.env.BucketName, Prefix: 'catalog/', ContinuationToken: token }
+          : { Bucket: process.env.BucketName, Prefix: 'catalog/' }
+      )
+      const listObjectsResult = await s3Request.promise()
+      for (const file of listObjectsResult.Contents) {
+        if (exports.swaggerFileFilter(file)) {
+          schedule(async () => {
+            const s = await getSwaggerFile(file)
+            ;(await builderPromise).addToCatalog(s)
+          })
+        }
+      }
+      if (!listObjectsResult.IsTruncated) break
+      token = listObjectsResult.NextContinuationToken
+    } while (s3Request != null)
+  }, {
+    onRejected(e) {
+      if (s3Request != null) {
+        s3Request.abort()
+        s3Request = null
+      }
+      throw e
+    }
+  })
+})
+```
+
+Here, it aids readability, and makes it abundantly clear what each operation is. I didn't have to contort, and it does exactly what it looks like it does.
+
+> Also, this example here is why I chose not to propose a simple parallel map. Task queues are the underlying primitive, and the underlying primitive is considerably more broad in its utility.
+
+</details>
+
 ## Solution
 
 I've got a very simple yet effective solution for this:
