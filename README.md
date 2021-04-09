@@ -143,7 +143,7 @@ Here's the TS definitions for that for a quick overview:
 
 ```ts
 interface PromiseConstructor {
-    scheduleAndRun<TaskResult>(
+    scheduleAndRun<InitResult>(
         // Note: this outer function counts against the concurrency limit, and
         // for statistical purposes counts as a task remaining. However, it does
         // *not* result in invoking `onResolved` or `onRejected` - instead, it
@@ -153,15 +153,17 @@ interface PromiseConstructor {
             // otherwise.
             // This can be called even during child task execution, but locks as
             // soon as the last remaining task result resolves.
-            schedule: (task: () => TaskResult | PromiseLike<TaskResult>) => boolean
-        ) => TaskResult | PromiseLike<TaskResult>,
+            schedule: <TaskResult>(
+                task: () => TaskResult | PromiseLike<TaskResult>
+            ) => Promise<TaskResult>
+        ) => InitResult | PromiseLike<InitResult>,
         options: {
             // Set the max concurrency. If `Infinity`, no concurrency limit
             // exists, and if less than 1, it throws a `RangeError`.
             maxConcurrency?: number;
-            // Called once a task resolves. The default behavior is to ignore
-            // the result.
-            onResolved?(value: TaskResult): void;
+            // Called once a task resolves. The default behavior is to do
+            // nothing.
+            onResolved?(): void;
             // Called once a task rejects. The default behavior is to re-throw,
             // and caught errors are aggregated with any applicable `init` error
             // into an `AggregateError` that's eventually returned.
@@ -192,17 +194,12 @@ await Promise.scheduleAndRun(async schedule => {
 async function runAndCollect(init, opts) {
     const results = []
 
-    await Promise.scheduleAndRun(init, {
-        ...opts,
-        onResolved(result) {
-            results.push(result)
-            if (opts && opts.onResolved) opts.onResolved(result)
-        },
-        onRejected(error) {
-            if (opts && opts.onRejected) opts.onRejected(error)
-            throw error
-        },
-    })
+    await Promise.scheduleAndRun(
+        schedule => init(task => schedule(async () => {
+            results.push(await task())
+        })),
+        opts
+    )
 
     return results
 }
@@ -213,7 +210,7 @@ const results = await runAndCollect(schedule => {
     }
 }, {
     maxConcurrency: 10,
-    onResolved() { advanceProgressBar() },
+    onResolved: advanceProgressBar,
 })
 
 completeProgressBar()
@@ -223,14 +220,15 @@ completeProgressBar()
 
 Here's a possible polyfill of what I'm proposing. Only a very rudimentary attempt is made to ensure performance, and the spec text would roughly equate to this.
 
-> As you can see, this is very non-trivial and somewhat involved, despite the relative simplicity of the API - it's a whole 77 lines of code excluding whitespace, and that's without any sort of defensive coding at all that's more typical of polyfills. I would not expect most people that aren't at least passingly familiar with computer science to be able to come up with this very quickly.
+> As you can see, this is very non-trivial and somewhat involved, despite the relative simplicity of the API - it's a whole 94 lines of code excluding whitespace, and that's without any sort of defensive coding at all that's more typical of polyfills. I would not expect most people that aren't at least passingly familiar with computer science to be able to come up with this very quickly.
 >
-> If you want a more optimized polyfill suitable to try out in more real world-y situations, take a look at `polyfill.js` here in the project root. Of course, it's a bit more involved, but 1. performance is neither simple nor easy and 2. it's also geared towards informing engine implementation.
+> If you want a more optimized polyfill suitable to try out in more real world-y situations, take a look at `polyfill.js` here in the project root. Of course, it's a bit more involved, but 1. performance is neither simple nor easy and 2. it's also intended to inform engine implementation.
 
 ```js
 if (!Promise.scheduleAndRun) {
     Promise.scheduleAndRun = (initialize, opts) => {
         "use strict"
+
         const maxConcurrencyOpt = opts != null ? opts.maxConcurrency : null
         const maxConcurrency = maxConcurrencyOpt != null
             ? Math.floor(maxConcurrencyOpt)
@@ -246,67 +244,95 @@ if (!Promise.scheduleAndRun) {
             let queue = []
             let initalizerResult
 
-            function handleReaction(hookName, value) {
-                if (opts == null) return false
-                try {
-                    const hook = opts[hookName]
-                    if (hook == null) return false
-                    hook.call(opts, value)
-                } catch (e) {
-                    errors.push(value)
+            function onTaskResolve() {
+                if (opts != null) {
+                    try {
+                        const hook = opts.onResolved
+                        if (hook != null) {
+                            hook.call(opts)
+                        }
+                    } catch (e) {
+                        errors.push(value)
+                    }
                 }
-                return true
+
+                settleTask()
             }
 
-            function handleResult(type, promise) {
-                promise.then(
-                    value => {
-                        if (type === "initial") {
-                            initalizerResult = value
+            function onTaskReject(error) {
+                handleRejection: {
+                    if (opts != null) {
+                        try {
+                            const hook = opts.onRejected
+                            if (hook != null) {
+                                hook.call(opts, value)
+                                break handleRejection
+                            }
+                        } catch (e) {
+                            error = e
                         }
-                        handleReaction("onResolved", value)
-                        settleTask()
-                    },
-                    value => {
-                        if (!handleReaction("onRejected", value)) {
-                            errors.push(e)
-                        }
-                        settleTask()
                     }
-                )
+
+                    errors.push(value)
+                }
+
+                settleTask()
             }
 
             function settleTask() {
                 const next = queue.shift()
+
                 if (next != null) {
-                    handleResult("scheduled",
-                        Promise.resolve().then(() => next())
-                    )
+                    const {task, resolve} = next
+
+                    const promise = new Promise(resolve => {
+                        resolve(task())
+                    })
+
+                    resolve(promise)
+
+                    promise.then(onTaskResolve, onTaskReject)
                 } else {
                     active--
+
                     if (active === 0) {
                         if (errors.length) {
                             reject(new AggregateError(errors))
                         } else {
                             resolve(initalizerResult)
                         }
+
                         errors = queue = resolve = reject = undefined
                     }
                 }
             }
 
-            handleResult("initial",
-                new Promise(resolve => resolve(initialize(task => {
-                    if (active === 0) return false
-                    if (active < maxConcurrency) {
-                        active++
-                        invokeTask("scheduled", task)
-                        return true
-                    } else {
-                        queue.push(task)
-                        return false
-                    }
-                })))
+            const schedule = task => {
+                if (active === 0) throw new Error("Scheduler locked!")
+
+                const p = new Promise(resolve => {
+                    queue.push({
+                        task: task,
+                        resolve: resolve,
+                    })
+                })
+
+                if (active < maxConcurrency) {
+                    active++
+                    Promise.resolve().then(settleTask)
+                }
+
+                return p
+            }
+
+            new Promise(resolve => {
+                resolve(initialize(schedule))
+            }).then(
+                value => {
+                    initalizerResult = value
+                    onTaskResolve()
+                },
+                onTaskReject
             )
         })
     }
